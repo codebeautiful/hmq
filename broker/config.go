@@ -10,9 +10,9 @@ import (
 	"io/ioutil"
 	"os"
 
-	"github.com/fhmq/hmq/logger"
-	"github.com/fhmq/hmq/plugins/auth"
-	"github.com/fhmq/hmq/plugins/bridge"
+	"github.com/codebeautiful/hmq/logger"
+	"github.com/codebeautiful/hmq/plugins/auth"
+	"github.com/codebeautiful/hmq/plugins/bridge"
 	"go.uber.org/zap"
 )
 

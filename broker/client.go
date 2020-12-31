@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fhmq/hmq/broker/lib/sessions"
-	"github.com/fhmq/hmq/broker/lib/topics"
-	"github.com/fhmq/hmq/plugins/bridge"
+	"github.com/codebeautiful/hmq/broker/lib/sessions"
+	"github.com/codebeautiful/hmq/broker/lib/topics"
+	"github.com/codebeautiful/hmq/plugins/bridge"
 	"golang.org/x/net/websocket"
 
 	"github.com/eclipse/paho.mqtt.golang/packets"
