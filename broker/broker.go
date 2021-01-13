@@ -11,12 +11,13 @@ import (
 	"github.com/codebeautiful/hmq/plugins/bridge"
 
 	"github.com/codebeautiful/hmq/plugins/auth"
+	"github.com/codebeautiful/hmq/plugins/router"
 
 	"github.com/codebeautiful/hmq/broker/lib/sessions"
 	"github.com/codebeautiful/hmq/broker/lib/topics"
 
-	"github.com/eclipse/paho.mqtt.golang/packets"
 	"github.com/codebeautiful/hmq/pool"
+	"github.com/eclipse/paho.mqtt.golang/packets"
 	"go.uber.org/zap"
 	"golang.org/x/net/websocket"
 )
@@ -46,6 +47,8 @@ type Broker struct {
 	sessionMgr  *sessions.Manager
 	auth        auth.Auth
 	bridgeMQ    bridge.BridgeMQ
+
+	apiRouter router.Http
 }
 
 func newMessagePool() []chan *Message {

@@ -324,7 +324,7 @@ func (c *client) processClientPublish(packet *packets.PublishPacket) {
 		Username:  c.info.username,
 		Action:    bridge.Publish,
 		Timestamp: time.Now().Unix(),
-		Payload:   string(packet.Payload),
+		Payload:   packet.Payload,
 		Topic:     topic,
 	})
 
