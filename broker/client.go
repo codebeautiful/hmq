@@ -3,7 +3,6 @@ package broker
 import (
 	"context"
 	"errors"
-	"github.com/eapache/queue"
 	"math/rand"
 	"net"
 	"reflect"
@@ -15,6 +14,9 @@ import (
 	"github.com/codebeautiful/hmq/broker/lib/sessions"
 	"github.com/codebeautiful/hmq/broker/lib/topics"
 	"github.com/codebeautiful/hmq/plugins/bridge"
+
+	"github.com/eapache/queue"
+
 	"golang.org/x/net/websocket"
 
 	"github.com/eclipse/paho.mqtt.golang/packets"
@@ -71,6 +73,7 @@ type client struct {
 	awaitingRel    map[uint16]int64
 	maxAwaitingRel int
 	inflight       map[uint16]*inflightElem
+	inflightMu     sync.RWMutex
 	mqueue         *queue.Queue
 	retryTimer     *time.Timer
 	retryTimerLock sync.Mutex
@@ -205,18 +208,23 @@ func ProcessMessage(msg *Message) {
 		c.ProcessPublish(packet)
 	case *packets.PubackPacket:
 		packet := ca.(*packets.PubackPacket)
+		c.inflightMu.Lock()
 		if _, found := c.inflight[packet.MessageID]; found {
 			delete(c.inflight, packet.MessageID)
 		} else {
 			log.Error("Duplicated PUBACK PacketId", zap.Uint16("MessageID", packet.MessageID))
 		}
+		c.inflightMu.Unlock()
 	case *packets.PubrecPacket:
 		packet := ca.(*packets.PubrecPacket)
-		if _, found := c.inflight[packet.MessageID]; found {
-			if c.inflight[packet.MessageID].status == Publish {
-				c.inflight[packet.MessageID].status = Pubrel
-				c.inflight[packet.MessageID].timestamp = time.Now().Unix()
-			} else if c.inflight[packet.MessageID].status == Pubrel {
+		c.inflightMu.RLock()
+		ielem, found := c.inflight[packet.MessageID]
+		c.inflightMu.RUnlock()
+		if found {
+			if ielem.status == Publish {
+				ielem.status = Pubrel
+				ielem.timestamp = time.Now().Unix()
+			} else if ielem.status == Pubrel {
 				log.Error("Duplicated PUBREC PacketId", zap.Uint16("MessageID", packet.MessageID))
 			}
 		} else {
@@ -240,7 +248,9 @@ func ProcessMessage(msg *Message) {
 		}
 	case *packets.PubcompPacket:
 		packet := ca.(*packets.PubcompPacket)
+		c.inflightMu.Lock()
 		delete(c.inflight, packet.MessageID)
+		c.inflightMu.Unlock()
 	case *packets.SubscribePacket:
 		packet := ca.(*packets.SubscribePacket)
 		c.ProcessSubscribe(packet)
@@ -752,9 +762,8 @@ func (c *client) WriterPacket(packet packets.ControlPacket) error {
 	}
 
 	c.mu.Lock()
-	err := packet.Write(c.conn)
-	c.mu.Unlock()
-	return err
+	defer c.mu.Unlock()
+	return packet.Write(c.conn)
 }
 
 func (c *client) registerPublishPacketId(packetId uint16) error {
