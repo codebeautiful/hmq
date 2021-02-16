@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/codebeautiful/hmq/plugins/router"
 	"io/ioutil"
 	"os"
 
@@ -36,6 +37,7 @@ type Config struct {
 type Plugins struct {
 	Auth   auth.Auth
 	Bridge bridge.BridgeMQ
+	ApiRouter router.Http
 }
 
 type NamedPlugins struct {

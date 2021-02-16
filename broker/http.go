@@ -22,5 +22,9 @@ func InitHTTPMoniter(b *Broker) {
 		c.JSON(200, &resp)
 	})
 
+	if b.apiRouter != nil {
+		b.apiRouter.AddRouter(router)
+	}
+
 	router.Run(":" + b.config.HTTPPort)
 }
