@@ -97,6 +97,7 @@ func NewBroker(config *Config) (*Broker, error) {
 
 	b.auth = b.config.Plugin.Auth
 	b.bridgeMQ = b.config.Plugin.Bridge
+	b.apiRouter = b.config.Plugin.ApiRouter // add api router plugin
 
 	return b, nil
 }
