@@ -5,3 +5,4 @@ log/*
 .vscode/settings.json
 
 vendor
+.pre-commit-config.yaml
