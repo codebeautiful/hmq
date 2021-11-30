@@ -77,14 +77,14 @@ func (c *csvLog) writeToLog(els []Elements) error {
 	if fname == "{LOG}" {
 		for _, value := range els {
 			t := time.Unix(value.Timestamp, 0)
-			log.Info(t.Format("2006-01-02T15:04:05") + " " + value.ClientID + " " + value.Username + " " + value.Action + " " + value.Topic + " " + value.Payload)
+			log.Info(t.Format("2006-01-02T15:04:05") + " " + value.ClientID + " " + value.Username + " " + value.Action + " " + value.Topic + " " + string(value.Payload))
 		}
 		return nil
 	}
 	if fname == "{STDOUT}" {
 		for _, value := range els {
 			t := time.Unix(value.Timestamp, 0)
-			fmt.Println(t.Format("2006-01-02T15:04:05") + " " + value.ClientID + " " + value.Username + " " + value.Action + " " + value.Topic + " " + value.Payload)
+			fmt.Println(t.Format("2006-01-02T15:04:05") + " " + value.ClientID + " " + value.Username + " " + value.Action + " " + value.Topic + " " + string(value.Payload))
 		}
 		return nil
 	}
@@ -115,7 +115,7 @@ func (c *csvLog) writeToLog(els []Elements) error {
 
 	for _, value := range els {
 		t := time.Unix(value.Timestamp, 0)
-		var outrow = []string{t.Format("2006-01-02T15:04:05"), value.ClientID, value.Username, value.Action, value.Topic, value.Payload}
+		var outrow = []string{t.Format("2006-01-02T15:04:05"), value.ClientID, value.Username, value.Action, value.Topic, string(value.Payload)}
 		writeOutRowError := writer.Write(outrow)
 		if writeOutRowError != nil {
 			log.Warn("Could not write msg to CSV Log")
@@ -388,19 +388,19 @@ func (c *csvLog) Publish(e *Elements) error {
 		// we will process the command here - but if we _really_ want to
 		// squeeze delays out, we could have a worker sitting on a
 		// command channel processing any commands.
-		if e.Payload == "RELOADCONFIG" {
+		if string(e.Payload) == "RELOADCONFIG" {
 			newConfig := LoadCSVLogConfig()
 			c.Lock()
 			c.config = newConfig
 			c.Unlock()
 
 		}
-		if e.Payload == "ROTATEFILE" {
+		if string(e.Payload) == "ROTATEFILE" {
 
 			c.rotateLog(true)
 
 		}
-		if e.Payload == "ROTATEFILENOPRUNE" {
+		if string(e.Payload) == "ROTATEFILENOPRUNE" {
 
 			c.rotateLog(false)
 
