@@ -6,3 +6,4 @@ log/*
 
 vendor
 .pre-commit-config.yaml
+hmq.exe
