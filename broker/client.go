@@ -16,13 +16,10 @@ import (
 	"github.com/codebeautiful/hmq/broker/lib/sessions"
 	"github.com/codebeautiful/hmq/broker/lib/topics"
 	"github.com/codebeautiful/hmq/plugins/bridge"
-
 	"github.com/eapache/queue"
-
-	"golang.org/x/net/websocket"
-
 	"github.com/eclipse/paho.mqtt.golang/packets"
 	"go.uber.org/zap"
+	"golang.org/x/net/websocket"
 )
 
 const (
