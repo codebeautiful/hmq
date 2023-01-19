@@ -3,19 +3,20 @@ package broker
 import (
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/codebeautiful/hmq/plugins/router"
-	"io/ioutil"
-	"os"
-
 	"github.com/codebeautiful/hmq/logger"
 	"github.com/codebeautiful/hmq/plugins/auth"
 	"github.com/codebeautiful/hmq/plugins/bridge"
+	"github.com/codebeautiful/hmq/plugins/router"
+	jsoniter "github.com/json-iterator/go"
 	"go.uber.org/zap"
+	"io/ioutil"
+	"os"
 )
+
+var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
 type Config struct {
 	Worker   int       `json:"workerNum"`
@@ -35,8 +36,8 @@ type Config struct {
 }
 
 type Plugins struct {
-	Auth   auth.Auth
-	Bridge bridge.BridgeMQ
+	Auth      auth.Auth
+	Bridge    bridge.BridgeMQ
 	ApiRouter router.Http
 }
 

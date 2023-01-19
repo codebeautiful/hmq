@@ -19,6 +19,7 @@ import (
 	"github.com/codebeautiful/hmq/pool"
 	"github.com/eclipse/paho.mqtt.golang/packets"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"golang.org/x/net/websocket"
 )
 
@@ -58,6 +59,37 @@ func newMessagePool() []chan *Message {
 		pool = append(pool, ch)
 	}
 	return pool
+}
+
+func getAdditionalLogFields(clientIdentifier string, conn net.Conn, additionalFields ...zapcore.Field) []zapcore.Field {
+	var wsConn *websocket.Conn = nil
+	var wsEnabled bool
+	result := []zapcore.Field{}
+
+	switch conn.(type) {
+	case *websocket.Conn:
+		wsEnabled = true
+		wsConn = conn.(*websocket.Conn)
+	case *net.TCPConn:
+		wsEnabled = false
+	}
+
+	// add optional fields
+	if len(additionalFields) > 0 {
+		result = append(result, additionalFields...)
+	}
+
+	// add client ID
+	result = append(result, zap.String("clientID", clientIdentifier))
+
+	// add remote connection address
+	if !wsEnabled && conn != nil && conn.RemoteAddr() != nil {
+		result = append(result, zap.Stringer("addr", conn.RemoteAddr()))
+	} else if wsEnabled && wsConn != nil && wsConn.Request() != nil {
+		result = append(result, zap.String("addr", wsConn.Request().RemoteAddr))
+	}
+
+	return result
 }
 
 func NewBroker(config *Config) (*Broker, error) {
@@ -169,7 +201,7 @@ func (b *Broker) StartWebsocketListening() {
 		err = http.ListenAndServe(hp, mux)
 	}
 	if err != nil {
-		log.Error("ListenAndServe:" + err.Error())
+		log.Error("ListenAndServe" + err.Error())
 		return
 	}
 }
@@ -196,33 +228,39 @@ func (b *Broker) StartClientListening(Tls bool) {
 			l, err = net.Listen("tcp", hp)
 			log.Info("Start Listening client on ", zap.String("hp", hp))
 		}
-		if err != nil {
-			log.Error("Error listening on ", zap.Error(err))
-			time.Sleep(1 * time.Second)
-		} else {
+
+		if err == nil {
 			break // successfully listening
 		}
+
+		log.Error("Error listening on ", zap.Error(err))
+		time.Sleep(1 * time.Second)
 	}
+
 	tmpDelay := 10 * ACCEPT_MIN_SLEEP
 	for {
 		conn, err := l.Accept()
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
-				log.Error("Temporary Client Accept Error(%v), sleeping %dms",
-					zap.Error(ne), zap.Duration("sleeping", tmpDelay/time.Millisecond))
+				log.Error(
+					"Temporary Client Accept Error(%v), sleeping %dms",
+					zap.Error(ne),
+					zap.Duration("sleeping", tmpDelay/time.Millisecond),
+				)
+
 				time.Sleep(tmpDelay)
 				tmpDelay *= 2
 				if tmpDelay > ACCEPT_MAX_SLEEP {
 					tmpDelay = ACCEPT_MAX_SLEEP
 				}
 			} else {
-				log.Error("Accept error: %v", zap.Error(err))
+				log.Error("Accept error", zap.Error(err))
 			}
 			continue
 		}
+
 		tmpDelay = ACCEPT_MIN_SLEEP
 		go b.handleConnection(CLIENT, conn)
-
 	}
 }
 
@@ -232,7 +270,7 @@ func (b *Broker) StartClusterListening() {
 
 	l, e := net.Listen("tcp", hp)
 	if e != nil {
-		log.Error("Error listening on ", zap.Error(e))
+		log.Error("Error listening on", zap.Error(e))
 		return
 	}
 
@@ -241,15 +279,19 @@ func (b *Broker) StartClusterListening() {
 		conn, err := l.Accept()
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
-				log.Error("Temporary Client Accept Error(%v), sleeping %dms",
-					zap.Error(ne), zap.Duration("sleeping", tmpDelay/time.Millisecond))
+				log.Error(
+					"Temporary Client Accept Error(%v), sleeping %dms",
+					zap.Error(ne),
+					zap.Duration("sleeping", tmpDelay/time.Millisecond),
+				)
+
 				time.Sleep(tmpDelay)
 				tmpDelay *= 2
 				if tmpDelay > ACCEPT_MAX_SLEEP {
 					tmpDelay = ACCEPT_MAX_SLEEP
 				}
 			} else {
-				log.Error("Accept error: %v", zap.Error(err))
+				log.Error("Accept error", zap.Error(err))
 			}
 			continue
 		}
@@ -275,7 +317,7 @@ func (b *Broker) handleConnection(typ int, conn net.Conn) {
 	//process connect packet
 	packet, err := packets.ReadPacket(conn)
 	if err != nil {
-		log.Error("read connect packet error: ", zap.Error(err))
+		log.Error("read connect packet error", zap.Error(err))
 		conn.Close()
 		return
 	}
@@ -289,7 +331,7 @@ func (b *Broker) handleConnection(typ int, conn net.Conn) {
 		return
 	}
 
-	log.Info("read connect from ", zap.String("clientID", msg.ClientIdentifier))
+	log.Info("read connect from ", getAdditionalLogFields(msg.ClientIdentifier, conn)...)
 
 	connack := packets.NewControlPacket(packets.Connack).(*packets.ConnackPacket)
 	connack.SessionPresent = msg.CleanSession
@@ -298,9 +340,8 @@ func (b *Broker) handleConnection(typ int, conn net.Conn) {
 	if connack.ReturnCode != packets.Accepted {
 		func() {
 			defer conn.Close()
-			err = connack.Write(conn)
-			if err != nil {
-				log.Error("send connack error, ", zap.Error(err), zap.String("clientID", msg.ClientIdentifier))
+			if err := connack.Write(conn); err != nil {
+				log.Error("send connack error", getAdditionalLogFields(msg.ClientIdentifier, conn, zap.Error(err))...)
 			}
 		}()
 		return
@@ -310,17 +351,15 @@ func (b *Broker) handleConnection(typ int, conn net.Conn) {
 		connack.ReturnCode = packets.ErrRefusedNotAuthorised
 		func() {
 			defer conn.Close()
-			err = connack.Write(conn)
-			if err != nil {
-				log.Error("send connack error, ", zap.Error(err), zap.String("clientID", msg.ClientIdentifier))
+			if err := connack.Write(conn); err != nil {
+				log.Error("send connack error", getAdditionalLogFields(msg.ClientIdentifier, conn, zap.Error(err))...)
 			}
 		}()
 		return
 	}
 
-	err = connack.Write(conn)
-	if err != nil {
-		log.Error("send connack error, ", zap.Error(err), zap.String("clientID", msg.ClientIdentifier))
+	if err := connack.Write(conn); err != nil {
+		log.Error("send connack error", getAdditionalLogFields(msg.ClientIdentifier, conn, zap.Error(err))...)
 		return
 	}
 
@@ -351,24 +390,22 @@ func (b *Broker) handleConnection(typ int, conn net.Conn) {
 
 	c.init()
 
-	err = b.getSession(c, msg, connack)
-	if err != nil {
-		log.Error("get session error: ", zap.String("clientID", c.info.clientID))
+	if err := b.getSession(c, msg, connack); err != nil {
+		log.Error("get session error", getAdditionalLogFields(c.info.clientID, conn, zap.Error(err))...)
 		return
 	}
 
 	cid := c.info.clientID
 
-	var exist bool
+	var exists bool
 	var old interface{}
 
 	switch typ {
 	case CLIENT:
-		old, exist = b.clients.Load(cid)
-		if exist {
-			log.Warn("client exist, close old...", zap.String("clientID", c.info.clientID))
-			ol, ok := old.(*client)
-			if ok {
+		old, exists = b.clients.Load(cid)
+		if exists {
+			if ol, ok := old.(*client); ok {
+				log.Warn("client exists, close old client", getAdditionalLogFields(ol.info.clientID, ol.conn)...)
 				ol.Close()
 			}
 		}
@@ -384,11 +421,10 @@ func (b *Broker) handleConnection(typ int, conn net.Conn) {
 			})
 		}
 	case ROUTER:
-		old, exist = b.routes.Load(cid)
-		if exist {
-			log.Warn("router exist, close old...")
-			ol, ok := old.(*client)
-			if ok {
+		old, exists = b.routes.Load(cid)
+		if exists {
+			if ol, ok := old.(*client); ok {
+				log.Warn("router exists, close old router", getAdditionalLogFields(ol.info.clientID, ol.conn)...)
 				ol.Close()
 			}
 		}
@@ -405,8 +441,8 @@ func (b *Broker) ConnectToDiscovery() {
 	for {
 		conn, err = net.Dial("tcp", b.config.Router)
 		if err != nil {
-			log.Error("Error trying to connect to route: ", zap.Error(err))
-			log.Debug("Connect to route timeout ,retry...")
+			log.Error("Error trying to connect to route", zap.Error(err))
+			log.Debug("Connect to route timeout, retry...")
 
 			if 0 == tempDelay {
 				tempDelay = 1 * time.Second
@@ -422,7 +458,7 @@ func (b *Broker) ConnectToDiscovery() {
 		}
 		break
 	}
-	log.Debug("connect to router success :", zap.String("Router", b.config.Router))
+	log.Debug("connect to router success", zap.String("Router", b.config.Router))
 
 	cid := b.id
 	info := info{
@@ -472,13 +508,13 @@ func (b *Broker) connectRouter(id, addr string) {
 
 		conn, err = net.Dial("tcp", addr)
 		if err != nil {
-			log.Error("Error trying to connect to route: ", zap.Error(err))
+			log.Error("Error trying to connect to route", zap.Error(err))
 
 			if retryTimes > 50 {
 				return
 			}
 
-			log.Debug("Connect to route timeout ,retry...")
+			log.Debug("Connect to route timeout, retry...")
 
 			if 0 == timeDelay {
 				timeDelay = 1 * time.Second
@@ -546,19 +582,19 @@ func (b *Broker) checkNodeExist(id, url string) bool {
 }
 
 func (b *Broker) CheckRemoteExist(remoteID, url string) bool {
-	exist := false
+	exists := false
 	b.remotes.Range(func(key, value interface{}) bool {
 		v, ok := value.(*client)
 		if ok {
 			if v.route.remoteUrl == url {
 				v.route.remoteID = remoteID
-				exist = true
+				exists = true
 				return false
 			}
 		}
 		return true
 	})
-	return exist
+	return exists
 }
 
 func (b *Broker) SendLocalSubsToRouter(c *client) {
@@ -581,32 +617,28 @@ func (b *Broker) SendLocalSubsToRouter(c *client) {
 		return true
 	})
 	if len(subInfo.Topics) > 0 {
-		err := c.WriterPacket(subInfo)
-		if err != nil {
-			log.Error("Send localsubs To Router error :", zap.Error(err))
+		if err := c.WriterPacket(subInfo); err != nil {
+			log.Error("Send localsubs To Router error", zap.Error(err))
 		}
 	}
 }
 
 func (b *Broker) BroadcastInfoMessage(remoteID string, msg *packets.PublishPacket) {
 	b.routes.Range(func(key, value interface{}) bool {
-		r, ok := value.(*client)
-		if ok {
+		if r, ok := value.(*client); ok {
 			if r.route.remoteID == remoteID {
 				return true
 			}
 			r.WriterPacket(msg)
 		}
 		return true
-
 	})
 }
 
 func (b *Broker) BroadcastSubOrUnsubMessage(packet packets.ControlPacket) {
 
 	b.routes.Range(func(key, value interface{}) bool {
-		r, ok := value.(*client)
-		if ok {
+		if r, ok := value.(*client); ok {
 			r.WriterPacket(packet)
 		}
 		return true
@@ -633,19 +665,30 @@ func (b *Broker) PublishMessage(packet *packets.PublishPacket) {
 	err := b.topicsMgr.Subscribers([]byte(packet.TopicName), packet.Qos, &subs, &qoss)
 	b.mu.Unlock()
 	if err != nil {
-		log.Error("search sub client error,  ", zap.Error(err))
+		log.Error("search sub client error", zap.Error(err))
 		return
 	}
 
 	for _, sub := range subs {
 		s, ok := sub.(*subscription)
 		if ok {
-			err := s.client.WriterPacket(packet)
-			if err != nil {
-				log.Error("write message error,  ", zap.Error(err))
+			if err := s.client.WriterPacket(packet); err != nil {
+				log.Error("write message error", zap.Error(err))
 			}
 		}
 	}
+}
+
+func (b *Broker) PublishMessageByClientId(packet *packets.PublishPacket, clientId string) error {
+	cli, loaded := b.clients.LoadAndDelete(clientId)
+	if !loaded {
+		return fmt.Errorf("clientId %s not connected", clientId)
+	}
+	conn, success := cli.(*client)
+	if !success {
+		return fmt.Errorf("clientId %s loaded fail", clientId)
+	}
+	return conn.WriterPacket(packet)
 }
 
 func (b *Broker) BroadcastUnSubscribe(topicsToUnSubscribeFrom []string) {
