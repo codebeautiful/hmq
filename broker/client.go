@@ -783,6 +783,20 @@ func (c *client) ProcessPing() {
 	if c.status == Disconnected {
 		return
 	}
+
+	b := c.broker
+	if b == nil {
+		return
+	}
+
+	b.Publish(&bridge.Elements{
+		ClientID:  c.info.clientID,
+		Username:  c.info.username,
+		Action:    bridge.PingReq,
+		Timestamp: time.Now().Unix(),
+		Topic:     "",
+	})
+
 	resp := packets.NewControlPacket(packets.Pingresp).(*packets.PingrespPacket)
 	err := c.WriterPacket(resp)
 	if err != nil {
