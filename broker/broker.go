@@ -2,10 +2,12 @@ package broker
 
 import (
 	"crypto/tls"
+	encJson "encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -84,10 +86,16 @@ func getAdditionalLogFields(clientIdentifier string, conn net.Conn, additionalFi
 	result = append(result, zap.String("clientID", clientIdentifier))
 
 	// add remote connection address
-	if !wsEnabled && conn != nil && conn.RemoteAddr() != nil {
-		result = append(result, zap.Stringer("addr", conn.RemoteAddr()))
-	} else if wsEnabled && wsConn != nil && wsConn.Request() != nil {
-		result = append(result, zap.String("addr", wsConn.Request().RemoteAddr))
+	if !wsEnabled && conn != nil {
+		if conn.RemoteAddr() != nil {
+			result = append(result, zap.String("addr", conn.RemoteAddr().String()))
+		}
+	} else if wsEnabled && wsConn != nil {
+		if wsConn.Request() != nil {
+			result = append(result, zap.String("addr", wsConn.Request().RemoteAddr))
+		} else {
+			result = append(result, zap.String("addr", wsConn.RemoteAddr().String()))
+		}
 	}
 
 	return result
@@ -147,7 +155,6 @@ func (b *Broker) SubmitWork(clientId string, msg *Message) {
 			ProcessMessage(msg)
 		})
 	}
-
 }
 
 func (b *Broker) Start() {
@@ -160,32 +167,40 @@ func (b *Broker) Start() {
 		go InitHTTPMoniter(b)
 	}
 
-	//listen client over tcp
+	// listen client over tcp
 	if b.config.Port != "" {
 		go b.StartClientListening(false)
 	}
 
-	//listen for cluster
+	// listen client over unix
+	if b.config.Port == "" && b.config.UnixFilePath != "" {
+		go b.StartUnixSocketClientListening(b.config.UnixFilePath, true)
+	}
+	// listen client over windows pipe
+	if b.config.Port == "" && b.config.UnixFilePath == "" && b.config.WindowsPipeName != "" {
+		go b.StartPipeSocketListening(b.config.WindowsPipeName, true)
+	}
+
+	// listen for cluster
 	if b.config.Cluster.Port != "" {
 		go b.StartClusterListening()
 	}
 
-	//listen for websocket
+	// listen for websocket
 	if b.config.WsPort != "" {
 		go b.StartWebsocketListening()
 	}
 
-	//listen client over tls
+	// listen client over tls
 	if b.config.TlsPort != "" {
 		go b.StartClientListening(true)
 	}
 
-	//connect on other node in cluster
+	// connect on other node in cluster
 	if b.config.Router != "" {
 		go b.processClusterInfo()
 		b.ConnectToDiscovery()
 	}
-
 }
 
 func (b *Broker) StartWebsocketListening() {
@@ -210,8 +225,8 @@ func (b *Broker) StartWebsocketListening() {
 func (b *Broker) wsHandler(ws *websocket.Conn) {
 	// io.Copy(ws, ws)
 	ws.PayloadType = websocket.BinaryFrame
-	err:=b.handleConnection(CLIENT, ws)
-	if err!=nil{
+	err := b.handleConnection(CLIENT, ws)
+	if err != nil {
 		ws.Close()
 	}
 }
@@ -264,9 +279,64 @@ func (b *Broker) StartClientListening(Tls bool) {
 		}
 
 		tmpDelay = ACCEPT_MIN_SLEEP
-		go func(){
-			err :=b.handleConnection(CLIENT, conn)
-			if err!=nil{
+		go func() {
+			err := b.handleConnection(CLIENT, conn)
+			if err != nil {
+				conn.Close()
+			}
+		}()
+	}
+}
+
+func (b *Broker) StartUnixSocketClientListening(socketPath string, unixSocket bool) {
+	var err error
+	var l net.Listener
+	for {
+		if unixSocket {
+			if FileExist(socketPath) {
+				err = os.Remove(socketPath)
+				if err != nil {
+					log.Error("Remove Unix socketPath ", zap.Error(err))
+				}
+			}
+			conn, _ := net.ResolveUnixAddr("unix", socketPath)
+			l, err = net.ListenUnix("unix", conn)
+			log.Info("Start Listening client on Unix socket", zap.String("socketPath", socketPath))
+		}
+		if err == nil {
+			break // successfully listening
+		}
+
+		log.Error("Error listening on ", zap.Error(err))
+		time.Sleep(1 * time.Second)
+	}
+
+	tmpDelay := 10 * ACCEPT_MIN_SLEEP
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Temporary() {
+				log.Error(
+					"Temporary Client Accept Error(%v), sleeping %dms",
+					zap.Error(ne),
+					zap.Duration("sleeping", tmpDelay/time.Millisecond),
+				)
+
+				time.Sleep(tmpDelay)
+				tmpDelay *= 2
+				if tmpDelay > ACCEPT_MAX_SLEEP {
+					tmpDelay = ACCEPT_MAX_SLEEP
+				}
+			} else {
+				log.Error("Accept error", zap.Error(err))
+			}
+			continue
+		}
+
+		tmpDelay = ACCEPT_MIN_SLEEP
+		go func() {
+			err := b.handleConnection(CLIENT, conn)
+			if err != nil {
 				conn.Close()
 			}
 		}()
@@ -306,9 +376,9 @@ func (b *Broker) StartClusterListening() {
 		}
 		tmpDelay = ACCEPT_MIN_SLEEP
 
-		go func(){
-			err :=b.handleConnection(ROUTER, conn)
-			if err!=nil{
+		go func() {
+			err := b.handleConnection(ROUTER, conn)
+			if err != nil {
 				conn.Close()
 			}
 		}()
@@ -327,11 +397,11 @@ func (b *Broker) DisConnClientByClientId(clientId string) {
 	conn.Close()
 }
 
-func (b *Broker) handleConnection(typ int, conn net.Conn) error{
-	//process connect packet
+func (b *Broker) handleConnection(typ int, conn net.Conn) error {
+	// process connect packet
 	packet, err := packets.ReadPacket(conn)
 	if err != nil {
-		return errors.New(fmt.Sprintln("read connect packet error:%v",err))
+		return errors.New(fmt.Sprintf("read connect packet error:%v", err))
 	}
 	if packet == nil {
 		return errors.New("received nil packet")
@@ -349,21 +419,21 @@ func (b *Broker) handleConnection(typ int, conn net.Conn) error{
 
 	if connack.ReturnCode != packets.Accepted {
 		if err := connack.Write(conn); err != nil {
-			return errors.New(fmt.Sprintln("send connack error:%v,clientID:%v,conn:%v",err,msg.ClientIdentifier,conn))
+			return fmt.Errorf("send connack error:%v,clientID:%v,conn:%v", err, msg.ClientIdentifier, conn)
 		}
-		return errors.New(fmt.Sprintln("connect packet validate failed with connack.ReturnCode%v",connack.ReturnCode))
+		return fmt.Errorf("connect packet validate failed with connack.ReturnCode%v", connack.ReturnCode)
 	}
 
 	if typ == CLIENT && !b.CheckConnectAuth(msg.ClientIdentifier, msg.Username, string(msg.Password)) {
 		connack.ReturnCode = packets.ErrRefusedNotAuthorised
 		if err := connack.Write(conn); err != nil {
-			return errors.New(fmt.Sprintln("send connack error:%v,clientID:%v,conn:%v",err,msg.ClientIdentifier,conn))
+			return fmt.Errorf("send connack error:%v,clientID:%v,conn:%v", err, msg.ClientIdentifier, conn)
 		}
-		return errors.New(fmt.Sprintln("connect packet CheckConnectAuth failed with connack.ReturnCode%v",connack.ReturnCode))
+		return fmt.Errorf("connect packet CheckConnectAuth failed with connack.ReturnCode%v", connack.ReturnCode)
 	}
 
 	if err := connack.Write(conn); err != nil {
-		return errors.New(fmt.Sprintln("send connack error:%v,clientID:%v,conn:%v",err,msg.ClientIdentifier,conn))
+		return fmt.Errorf("send connack error:%v,clientID:%v,conn:%v", err, msg.ClientIdentifier, conn)
 	}
 
 	willmsg := packets.NewControlPacket(packets.Publish).(*packets.PublishPacket)
@@ -394,7 +464,7 @@ func (b *Broker) handleConnection(typ int, conn net.Conn) error{
 	c.init()
 
 	if err := b.getSession(c, msg, connack); err != nil {
-		return errors.New(fmt.Sprintln("get session error:%v,clientID:%v,conn:%v",err,msg.ClientIdentifier,conn))
+		return fmt.Errorf("get session error:%v,clientID:%v,conn:%v", err, msg.ClientIdentifier, conn)
 	}
 
 	cid := c.info.clientID
@@ -413,7 +483,21 @@ func (b *Broker) handleConnection(typ int, conn net.Conn) error{
 		}
 		b.clients.Store(cid, c)
 
-		b.OnlineOfflineNotification(cid, true)
+		pubPack := PubPacket{}
+		if willmsg != nil {
+			pubPack.TopicName = info.willMsg.TopicName
+			pubPack.Payload = info.willMsg.Payload
+		}
+
+		pubInfo := Info{
+			ClientID:  info.clientID,
+			Username:  info.username,
+			Password:  info.password,
+			Keepalive: info.keepalive,
+			WillMsg:   pubPack,
+		}
+
+		b.OnlineOfflineNotification(pubInfo, true, c.lastMsgTime)
 		{
 			b.Publish(&bridge.Elements{
 				ClientID:  msg.ClientIdentifier,
@@ -447,7 +531,7 @@ func (b *Broker) ConnectToDiscovery() {
 			log.Error("Error trying to connect to route", zap.Error(err))
 			log.Debug("Connect to route timeout, retry...")
 
-			if 0 == tempDelay {
+			if tempDelay == 0 {
 				tempDelay = 1 * time.Second
 			} else {
 				tempDelay *= 2
@@ -494,7 +578,6 @@ func (b *Broker) processClusterInfo() {
 		}
 		ProcessMessage(msg)
 	}
-
 }
 
 func (b *Broker) connectRouter(id, addr string) {
@@ -519,7 +602,7 @@ func (b *Broker) connectRouter(id, addr string) {
 
 			log.Debug("Connect to route timeout, retry...")
 
-			if 0 == timeDelay {
+			if timeDelay == 0 {
 				timeDelay = 1 * time.Second
 			} else {
 				timeDelay *= 2
@@ -559,7 +642,6 @@ func (b *Broker) connectRouter(id, addr string) {
 
 	go c.readLoop()
 	go c.StartPing()
-
 }
 
 func (b *Broker) checkNodeExist(id, url string) bool {
@@ -572,7 +654,7 @@ func (b *Broker) checkNodeExist(id, url string) bool {
 			return true
 		}
 
-		//skip
+		// skip
 		l, ok := v.(string)
 		if ok {
 			if url == l {
@@ -639,7 +721,6 @@ func (b *Broker) BroadcastInfoMessage(remoteID string, msg *packets.PublishPacke
 }
 
 func (b *Broker) BroadcastSubOrUnsubMessage(packet packets.ControlPacket) {
-
 	b.routes.Range(func(key, value interface{}) bool {
 		if r, ok := value.(*client); ok {
 			r.WriterPacket(packet)
@@ -704,11 +785,44 @@ func (b *Broker) BroadcastUnSubscribe(topicsToUnSubscribeFrom []string) {
 	b.BroadcastSubOrUnsubMessage(unsub)
 }
 
-func (b *Broker) OnlineOfflineNotification(clientID string, online bool) {
+type OnlineOfflineMsg struct {
+	ClientID    string `json:"clientID"`
+	Online      bool   `json:"online"`
+	Timestamp   string `json:"timestamp"`
+	ClientInfo  Info   `json:"info"`
+	LastMsgTime int64  `json:"lastMsg"`
+}
+
+func (b *Broker) OnlineOfflineNotification(info Info, online bool, lastMsg int64) {
 	packet := packets.NewControlPacket(packets.Publish).(*packets.PublishPacket)
-	packet.TopicName = "$SYS/broker/connection/clients/" + clientID
+	packet.TopicName = "$SYS/broker/connection/clients/" + info.ClientID
 	packet.Qos = 0
-	packet.Payload = []byte(fmt.Sprintf(`{"clientID":"%s","online":%v,"timestamp":"%s"}`, clientID, online, time.Now().UTC().Format(time.RFC3339)))
+
+	msg := OnlineOfflineMsg{
+		ClientID:    info.ClientID,
+		Online:      online,
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		ClientInfo:  info,
+		LastMsgTime: lastMsg,
+	}
+
+	if b, err := encJson.Marshal(msg); err != nil {
+		// This is a TERRIBLE situation, falling back to legacy format to not break API Contract
+		packet.Payload = []byte(fmt.Sprintf(`{"clientID":"%s","online":%v,"timestamp":"%s"}`, info.ClientID, online, time.Now().UTC().Format(time.RFC3339)))
+	} else {
+		packet.Payload = b
+	}
 
 	b.PublishMessage(packet)
+}
+
+func FileExist(name string) bool {
+	_, err := os.Stat(name)
+	if err == nil {
+		return true
+	} else if os.IsNotExist(err) {
+		return false
+	} else {
+		panic(err)
+	}
 }
